@@ -1,0 +1,1429 @@
+-- =============================================================
+-- 👻 GHOST OSCAR HUB (Updated Instant Stand / Get Up Function)
+-- =============================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Lighting = game:GetService("Lighting")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+-- States
+local WalkSpeedEnabled, NoclipEnabled, InfiniteJumpEnabled, NoLegAnimEnabled = false, false, false, false
+local FlyingEnabled, AntiLagEnabled, SpectateEnabled = false, false, false
+local AutoFollowEnabled, IsBehindActive, AntiVoidEnabled, MaxZoomEnabled = false, false, false, false
+local ESPAllEnabled, ESPSpecificEnabled, RoleESPEnabled = false, false, false
+local FullbrightEnabled, ShiftLockEnabled = false, false
+local ExtFlightEnabled, BangRipEnabled = false, false
+local OrbitEnabled, LookAtEnabled = false, false
+local HitboxEnabled, HitboxShape = false, "Block"
+local CustomJumpEnabled, InstantGetUpEnabled = false, false
+
+local WalkSpeedValue, FlySpeed, FollowSpeed = 16, 50, 16
+local JumpHeightValue = 50
+local JumpScareTime, FlingTime, BehindStayTime = 2, 1.5, 3
+local BangRipSpeed, OrbitSpeed, OrbitDistance, OrbitAngle = 50, 5, 10, 0
+local HitboxSize = 15
+local ESPTextSize = 12
+
+-- Dynamic Role Colors Setup
+local MurderColor = Color3.fromRGB(255, 60, 60)   -- สีฆาตกร
+local HeroColor = Color3.fromRGB(60, 160, 255)    -- สีฮีโร่
+local InnocentColor = Color3.fromRGB(50, 255, 80) -- สีคนดี
+
+local JumpScareTarget, LockFollowTarget, FlingTarget, BehindTarget = nil, nil, nil, nil
+local BangRipTarget, ESPTarget, OrbitTarget, LookAtTarget = nil, nil, nil, nil
+
+local Connections = {}
+local ExternalFlyGuis = {}
+local ESPCache = {}
+local DisabledParticles = {}
+local LastSafeCF = nil
+local OriginalDevMouseLock = LocalPlayer.DevEnableMouseLock
+
+local OldLighting = {
+    Ambient = Lighting.Ambient,
+    OutdoorAmbient = Lighting.OutdoorAmbient,
+    Brightness = Lighting.Brightness,
+    GlobalShadows = Lighting.GlobalShadows,
+    FogEnd = Lighting.FogEnd
+}
+
+local function CleanConnection(name)
+    if Connections[name] then
+        Connections[name]:Disconnect()
+        Connections[name] = nil
+    end
+end
+
+local function GetHRP(plr)
+    return plr and plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHum(plr)
+    return plr and plr.Character and plr.Character:FindFirstChildOfClass("Humanoid")
+end
+
+local function GetTarget(selectedTarget)
+    if selectedTarget and selectedTarget.Parent and selectedTarget.Character then
+        return selectedTarget
+    end
+    return nil
+end
+
+local function GetMouseLockController()
+    local success, result = pcall(function()
+        local playerScripts = LocalPlayer:FindFirstChild("PlayerScripts")
+        if playerScripts then
+            local playerModule = playerScripts:FindFirstChild("PlayerModule")
+            if playerModule then
+                return require(playerModule):GetCameras():GetMouseLockController()
+            end
+        end
+    end)
+    return success and result or nil
+end
+
+local function ParseColorInput(t, defaultColor)
+    local r, g, b = t:match("(%d+)[,%s]+(%d+)[,%s]+(%d+)")
+    if r and g and b then
+        return Color3.fromRGB(math.clamp(tonumber(r), 0, 255), math.clamp(tonumber(g), 0, 255), math.clamp(tonumber(b), 0, 255))
+    else
+        local lower = t:lower()
+        if lower == "red" or lower == "แดง" then return Color3.fromRGB(255, 60, 60)
+        elseif lower == "green" or lower == "เขียว" then return Color3.fromRGB(50, 255, 80)
+        elseif lower == "blue" or lower == "ฟ้า" or lower == "น้ำเงิน" then return Color3.fromRGB(60, 160, 255)
+        elseif lower == "yellow" or lower == "เหลือง" then return Color3.fromRGB(255, 220, 0)
+        elseif lower == "purple" or lower == "ม่วง" then return Color3.fromRGB(190, 80, 255)
+        elseif lower == "white" or lower == "ขาว" then return Color3.fromRGB(255, 255, 255)
+        elseif lower == "orange" or lower == "ส้ม" then return Color3.fromRGB(255, 140, 0)
+        elseif lower == "cyan" or lower == "ฟ้าอ่อน" then return Color3.fromRGB(0, 255, 255)
+        end
+    end
+    return defaultColor
+end
+
+local function DetectPlayerRole(p)
+    if not p then return "คนดี", InnocentColor end
+    local char = p.Character
+    local backpack = p:FindFirstChild("Backpack")
+    
+    local hasKnife = false
+    local hasGun = false
+
+    local function CheckTool(tool)
+        if tool and tool:IsA("Tool") then
+            local name = tool.Name:lower()
+            if name:find("knife") or name:find("blade") or name:find("sword") or name:find("dagger") or name:find("มีด") or name:find("ขวาน") then
+                hasKnife = true
+            elseif name:find("gun") or name:find("revolver") or name:find("pistol") or name:find("sheriff") or name:find("ปืน") or name:find("bow") then
+                hasGun = true
+            end
+        end
+    end
+
+    if backpack then
+        for _, tool in pairs(backpack:GetChildren()) do CheckTool(tool) end
+    end
+    if char then
+        for _, tool in pairs(char:GetChildren()) do CheckTool(tool) end
+    end
+
+    local roleVal = p:FindFirstChild("Role") or (char and char:FindFirstChild("Role"))
+    local roleStr = roleVal and tostring(roleVal.Value):lower() or ""
+    local teamStr = p.Team and p.Team.Name:lower() or ""
+
+    if hasKnife or roleStr:find("murder") or teamStr:find("murder") or roleStr:find("killer") then
+        return "ไอชั่ว", MurderColor
+    elseif hasGun or roleStr:find("sheriff") or roleStr:find("hero") or teamStr:find("sheriff") or teamStr:find("hero") or roleStr:find("police") then
+        return "ฮีโร่", HeroColor
+    else
+        return "คนดี", InnocentColor
+    end
+end
+
+local function TeleportToDroppedGun()
+    local myHRP = GetHRP(LocalPlayer)
+    if not myHRP then return end
+
+    local targetPart = nil
+
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Tool") then
+            local name = obj.Name:lower()
+            if name:find("gun") or name:find("revolver") or name:find("pistol") or name:find("sheriff") or name:find("bow") or name:find("ปืน") or name:find("weapon") then
+                local isHeld = false
+                for _, p in pairs(Players:GetPlayers()) do
+                    if (p.Character and obj:IsDescendantOf(p.Character)) or (p:FindFirstChild("Backpack") and obj:IsDescendantOf(p.Backpack)) then
+                        isHeld = true
+                        break
+                    end
+                end
+                if not isHeld then
+                    targetPart = obj:FindFirstChild("Handle") or obj:FindFirstChildOfClass("BasePart")
+                    if targetPart then break end
+                end
+            end
+        elseif obj:IsA("BasePart") then
+            local name = obj.Name:lower()
+            if name == "gun" or name == "gundrop" or name == "revolver" or name == "sheriff" or name == "gunpart" then
+                targetPart = obj
+                break
+            end
+        end
+    end
+
+    if targetPart then
+        local originalCFrame = myHRP.CFrame
+        myHRP.CFrame = targetPart.CFrame + Vector3.new(0, 0.5, 0)
+        
+        if typeof(firetouchinterest) == "function" then
+            pcall(function()
+                firetouchinterest(myHRP, targetPart, 0)
+                task.wait(0.01)
+                firetouchinterest(myHRP, targetPart, 1)
+            end)
+        else
+            task.wait(0.01)
+        end
+
+        myHRP.CFrame = originalCFrame
+    end
+end
+
+local Theme = {
+    Background = Color3.fromRGB(13, 14, 20),
+    Sidebar = Color3.fromRGB(19, 21, 30),
+    Header = Color3.fromRGB(22, 24, 35),
+    Card = Color3.fromRGB(25, 28, 41),
+    CardBorder = Color3.fromRGB(42, 46, 68),
+    TextPrimary = Color3.fromRGB(245, 247, 250),
+    TextSecondary = Color3.fromRGB(140, 148, 175),
+    AccentOn = Color3.fromRGB(139, 92, 246),
+    AccentHover = Color3.fromRGB(124, 58, 237),
+    AccentOff = Color3.fromRGB(38, 42, 60),
+    ButtonRed = Color3.fromRGB(239, 68, 68),
+    InputBg = Color3.fromRGB(16, 18, 26)
+}
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "GhostOscarGUI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+local ToggleBtn = Instance.new("TextButton", ScreenGui)
+ToggleBtn.Size, ToggleBtn.Position = UDim2.new(0, 48, 0, 48), UDim2.new(0, 20, 0, 20)
+ToggleBtn.BackgroundColor3 = Theme.Sidebar
+ToggleBtn.Text, ToggleBtn.TextSize, ToggleBtn.TextColor3 = "👻", 22, Theme.TextPrimary
+ToggleBtn.Active, ToggleBtn.Draggable = true, true
+Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 14)
+
+local ToggleStroke = Instance.new("UIStroke", ToggleBtn)
+ToggleStroke.Color = Theme.AccentOn
+ToggleStroke.Thickness = 2
+
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size, MainFrame.Position = UDim2.new(0, 460, 0, 320), UDim2.new(0.5, -230, 0.5, -160)
+MainFrame.BackgroundColor3 = Theme.Background
+MainFrame.BorderSizePixel = 0
+MainFrame.Active, MainFrame.Draggable, MainFrame.Visible = true, true, true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
+
+local MainStroke = Instance.new("UIStroke", MainFrame)
+MainStroke.Color = Theme.CardBorder
+MainStroke.Thickness = 1.5
+
+local function ToggleWindow() MainFrame.Visible = not MainFrame.Visible end
+ToggleBtn.MouseButton1Click:Connect(ToggleWindow)
+UserInputService.InputBegan:Connect(function(i, g) if not g and i.KeyCode == Enum.KeyCode.K then ToggleWindow() end end)
+
+local TitleBar = Instance.new("Frame", MainFrame)
+TitleBar.Size, TitleBar.BackgroundColor3 = UDim2.new(1, 0, 0, 40), Theme.Header
+TitleBar.BorderSizePixel = 0
+Instance.new("UICorner", TitleBar).CornerRadius = UDim.new(0, 14)
+
+local Title = Instance.new("TextLabel", TitleBar)
+Title.Size, Title.Position, Title.BackgroundTransparency = UDim2.new(1, -50, 1, 0), UDim2.new(0, 14, 0, 0), 1
+Title.Text = "👻 GHOST OSCAR HUB"
+Title.TextColor3, Title.TextSize, Title.Font = Theme.TextPrimary, 12, Enum.Font.GothamBold
+Title.TextXAlignment = Enum.TextXAlignment.Left
+
+local CloseBtn = Instance.new("TextButton", TitleBar)
+CloseBtn.Size, CloseBtn.Position = UDim2.new(0, 26, 0, 26), UDim2.new(1, -33, 0.5, -13)
+CloseBtn.BackgroundColor3 = Theme.ButtonRed
+CloseBtn.Text, CloseBtn.TextColor3, CloseBtn.Font, CloseBtn.TextSize = "✕", Theme.TextPrimary, Enum.Font.GothamBold, 11
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(1, 0)
+CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
+
+local Sidebar = Instance.new("Frame", MainFrame)
+Sidebar.Size, Sidebar.Position = UDim2.new(0, 125, 1, -40), UDim2.new(0, 0, 0, 40)
+Sidebar.BackgroundColor3 = Theme.Sidebar
+Sidebar.BorderSizePixel = 0
+
+local SideLayout = Instance.new("UIListLayout", Sidebar)
+SideLayout.SortOrder, SideLayout.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 4)
+SideLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+
+local SidePadding = Instance.new("UIPadding", Sidebar)
+SidePadding.PaddingTop = UDim.new(0, 8)
+
+local ContentArea = Instance.new("Frame", MainFrame)
+ContentArea.Size, ContentArea.Position = UDim2.new(1, -130, 1, -45), UDim2.new(0, 128, 0, 42)
+ContentArea.BackgroundTransparency = 1
+
+local Tabs = {}
+local TabButtons = {}
+
+local function CreateTab(name, icon, order)
+    local tabBtn = Instance.new("TextButton", Sidebar)
+    tabBtn.Size = UDim2.new(0.9, 0, 0, 32)
+    tabBtn.BackgroundColor3 = Theme.Sidebar
+    tabBtn.Text = icon .. " " .. name
+    tabBtn.TextColor3 = Theme.TextSecondary
+    tabBtn.Font = Enum.Font.GothamMedium
+    tabBtn.TextSize = 10
+    tabBtn.LayoutOrder = order
+    Instance.new("UICorner", tabBtn).CornerRadius = UDim.new(0, 8)
+
+    local scroll = Instance.new("ScrollingFrame", ContentArea)
+    scroll.Size = UDim2.new(1, -6, 1, 0)
+    scroll.BackgroundTransparency = 1
+    scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    scroll.ScrollBarThickness = 3
+    scroll.ScrollBarImageColor3 = Theme.AccentOn
+    scroll.Visible = false
+
+    local list = Instance.new("UIListLayout", scroll)
+    list.SortOrder, list.Padding = Enum.SortOrder.LayoutOrder, UDim.new(0, 6)
+    
+    list:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        scroll.CanvasSize = UDim2.new(0, 0, 0, list.AbsoluteContentSize.Y + 10)
+    end)
+
+    tabBtn.MouseButton1Click:Connect(function()
+        for _, t in pairs(Tabs) do t.Visible = false end
+        for _, b in pairs(TabButtons) do 
+            b.BackgroundColor3 = Theme.Sidebar 
+            b.TextColor3 = Theme.TextSecondary
+        end
+        scroll.Visible = true
+        tabBtn.BackgroundColor3 = Theme.AccentOn
+        tabBtn.TextColor3 = Theme.TextPrimary
+    end)
+
+    Tabs[name] = scroll
+    TabButtons[name] = tabBtn
+    return scroll
+end
+
+local TabMove = CreateTab("เคลื่อนที่", "⚡", 1)
+local TabCam = CreateTab("การมองเห็น", "👁️", 2)
+local TabTroll = CreateTab("เป้าหมาย", "🎯", 3)
+local TabSafe = CreateTab("ระบบ/ป้องกัน", "🛡️", 4)
+
+Tabs["เคลื่อนที่"].Visible = true
+TabButtons["เคลื่อนที่"].BackgroundColor3 = Theme.AccentOn
+TabButtons["เคลื่อนที่"].TextColor3 = Theme.TextPrimary
+
+local function CreateCard(parent, h)
+    local card = Instance.new("Frame", parent)
+    card.Size, card.BackgroundColor3 = UDim2.new(1, -6, 0, h or 34), Theme.Card
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    
+    local stroke = Instance.new("UIStroke", card)
+    stroke.Color = Theme.CardBorder
+    stroke.Thickness = 1
+    return card
+end
+
+local function CreateCircleBtn(parent, text, bg, size, pos)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = size or UDim2.new(0, 28, 0, 24)
+    btn.Position = pos or UDim2.new(1, -32, 0.5, -12)
+    btn.BackgroundColor3 = bg or Theme.AccentOff
+    btn.Text = text
+    btn.TextColor3 = Theme.TextPrimary
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    return btn
+end
+
+local function CreateToggleButton(parent, title, callback)
+    local card = CreateCard(parent, 34)
+    local label = Instance.new("TextLabel", card)
+    label.Size, label.Position, label.BackgroundTransparency = UDim2.new(1, -50, 1, 0), UDim2.new(0, 10, 0, 0), 1
+    label.Text = title
+    label.TextColor3, label.Font, label.TextSize = Theme.TextPrimary, Enum.Font.GothamMedium, 10
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local btn = CreateCircleBtn(card, "OFF", Theme.AccentOff, UDim2.new(0, 38, 0, 22), UDim2.new(1, -44, 0.5, -11))
+    local state = false
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        btn.Text = state and "ON" or "OFF"
+        btn.BackgroundColor3 = state and Theme.AccentOn or Theme.AccentOff
+        callback(state)
+    end)
+    return card
+end
+
+local function CreateActionButton(parent, title, btnText, bg, callback)
+    local card = CreateCard(parent, 34)
+    local label = Instance.new("TextLabel", card)
+    label.Size, label.Position, label.BackgroundTransparency = UDim2.new(1, -85, 1, 0), UDim2.new(0, 10, 0, 0), 1
+    label.Text = title
+    label.TextColor3, label.Font, label.TextSize = Theme.TextPrimary, Enum.Font.GothamMedium, 10
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local btn = Instance.new("TextButton", card)
+    btn.Size, btn.Position = UDim2.new(0, 70, 0, 22), UDim2.new(1, -76, 0.5, -11)
+    btn.BackgroundColor3 = bg or Theme.ButtonRed
+    btn.Text = btnText or "กด"
+    btn.TextColor3 = Theme.TextPrimary
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 10
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    btn.MouseButton1Click:Connect(callback)
+    return card
+end
+
+local function CreateInputWithCircleBtn(parent, placeholder, icon, callback)
+    local card = CreateCard(parent, 34)
+    local box = Instance.new("TextBox", card)
+    box.Size, box.Position = UDim2.new(1, -45, 0, 22), UDim2.new(0, 8, 0.5, -11)
+    box.BackgroundColor3 = Theme.InputBg
+    box.PlaceholderText, box.Text = placeholder, ""
+    box.PlaceholderColor3 = Theme.TextSecondary
+    box.TextColor3, box.Font, box.TextSize = Theme.TextPrimary, Enum.Font.Gotham, 10
+    Instance.new("UICorner", box).CornerRadius = UDim.new(0, 6)
+    
+    local boxStroke = Instance.new("UIStroke", box)
+    boxStroke.Color = Theme.CardBorder
+    boxStroke.Thickness = 1
+    
+    local btn = CreateCircleBtn(card, icon, Theme.AccentOn, UDim2.new(0, 28, 0, 22), UDim2.new(1, -34, 0.5, -11))
+    local fire = function() callback(box.Text) end
+    btn.MouseButton1Click:Connect(fire)
+    box.FocusLost:Connect(function(e) if e then fire() end end)
+    return card
+end
+
+local function CreateDropdown(parent, title, icon, actionText, bg, onSelect, onAction)
+    local card = CreateCard(parent, 34)
+    card.ClipsDescendants = true
+    
+    local mainBtn = Instance.new("TextButton", card)
+    mainBtn.Size, mainBtn.Position, mainBtn.BackgroundTransparency = UDim2.new(1, -45, 0, 34), UDim2.new(0, 10, 0, 0), 1
+    mainBtn.Text = title
+    mainBtn.TextColor3, mainBtn.Font, mainBtn.TextSize = Theme.TextPrimary, Enum.Font.GothamMedium, 10
+    mainBtn.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local actBtn = icon and CreateCircleBtn(card, icon, bg or Theme.AccentOn, UDim2.new(0, 28, 0, 22), UDim2.new(1, -34, 0, 6))
+    
+    local listFrame = Instance.new("Frame", card)
+    listFrame.Size, listFrame.Position, listFrame.BackgroundTransparency = UDim2.new(1, 0, 1, -34), UDim2.new(0, 0, 0, 34), 1
+    Instance.new("UIListLayout", listFrame).SortOrder = Enum.SortOrder.LayoutOrder
+    
+    local isOpen = false
+    local function Refresh()
+        for _, c in pairs(listFrame:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+        
+        local resetItem = Instance.new("Frame", listFrame)
+        resetItem.Size, resetItem.BackgroundTransparency = UDim2.new(1, 0, 0, 28), 1
+        local resetLbl = Instance.new("TextLabel", resetItem)
+        resetLbl.Size, resetLbl.Position, resetLbl.BackgroundTransparency = UDim2.new(1, -45, 1, 0), UDim2.new(0, 10, 0, 0), 1
+        resetLbl.Text = "[ยกเลิก / ไม่เลือก]"
+        resetLbl.TextColor3, resetLbl.Font, resetLbl.TextSize = Theme.AccentOn, Enum.Font.GothamBold, 10
+        resetLbl.TextXAlignment = Enum.TextXAlignment.Left
+        
+        local resetSel = CreateCircleBtn(resetItem, "ล้าง", Theme.AccentOff, UDim2.new(0, 32, 0, 20), UDim2.new(1, -38, 0.5, -10))
+        resetSel.TextSize = 8
+        resetSel.MouseButton1Click:Connect(function()
+            onSelect(nil, mainBtn)
+            isOpen = false
+            card.Size = UDim2.new(1, -6, 0, 34)
+        end)
+
+        local count = 1
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                count = count + 1
+                local item = Instance.new("Frame", listFrame)
+                item.Size, item.BackgroundTransparency = UDim2.new(1, 0, 0, 28), 1
+                
+                local lbl = Instance.new("TextLabel", item)
+                lbl.Size, lbl.Position, lbl.BackgroundTransparency = UDim2.new(1, -45, 1, 0), UDim2.new(0, 10, 0, 0), 1
+                lbl.Text = p.DisplayName .. " (@" .. p.Name .. ")"
+                lbl.TextColor3, lbl.Font, lbl.TextSize = Theme.TextSecondary, Enum.Font.Gotham, 10
+                lbl.TextXAlignment = Enum.TextXAlignment.Left
+                
+                local sel = CreateCircleBtn(item, actionText or "เลือก", bg or Theme.AccentOn, UDim2.new(0, 32, 0, 20), UDim2.new(1, -38, 0.5, -10))
+                sel.TextSize = 8
+                sel.MouseButton1Click:Connect(function()
+                    onSelect(p, mainBtn)
+                    isOpen = false
+                    card.Size = UDim2.new(1, -6, 0, 34)
+                end)
+            end
+        end
+        if isOpen then card.Size = UDim2.new(1, -6, 0, 34 + (count * 28)) end
+    end
+    
+    mainBtn.MouseButton1Click:Connect(function()
+        isOpen = not isOpen
+        if isOpen then Refresh() else card.Size = UDim2.new(1, -6, 0, 34) end
+    end)
+    
+    if actBtn and onAction then actBtn.MouseButton1Click:Connect(onAction) end
+    return Refresh, function() return isOpen end
+end
+
+-- ==================== TAB 1: ⚡ MOVEMENT ====================
+CreateToggleButton(TabMove, "👻 1. เดินทะลุ (Noclip)", function(e)
+    NoclipEnabled = e
+    if NoclipEnabled then
+        Connections["Noclip"] = RunService.Stepped:Connect(function()
+            if LocalPlayer.Character then
+                for _, part in pairs(LocalPlayer.Character:GetChildren()) do
+                    if part:IsA("BasePart") and part.CanCollide then
+                        part.CanCollide = false
+                    end
+                end
+            end
+        end)
+    else
+        CleanConnection("Noclip")
+    end
+end)
+
+CreateInputWithCircleBtn(TabMove, "🏃 2. ตั้งค่าความเร็วเดิน (1-1000)", "⚡", function(t)
+    local n = tonumber(t)
+    if n then WalkSpeedValue = math.clamp(n, 1, 1000) end
+end)
+
+CreateToggleButton(TabMove, "⚡ 2.1 เปิด/ปิด ความเร็วเดิน (WalkSpeed)", function(e)
+    WalkSpeedEnabled = e
+    if not WalkSpeedEnabled then
+        local hum = GetHum(LocalPlayer)
+        if hum then hum.WalkSpeed = 16 end
+    end
+end)
+
+CreateInputWithCircleBtn(TabMove, "🦘 6.1 ตั้งค่าความสูงกระโดด (0.1 - 1000000000000000)", "📏", function(t)
+    local n = tonumber(t)
+    if n then JumpHeightValue = math.clamp(n, 0.1, 1e16) end
+end)
+
+CreateToggleButton(TabMove, "🦘 6.2 กระโดดปกติได้ทุกแมพ (Custom Jump Height)", function(e)
+    CustomJumpEnabled = e
+end)
+
+UserInputService.JumpRequest:Connect(function()
+    if CustomJumpEnabled then
+        local hum = GetHum(LocalPlayer)
+        local hrp = GetHRP(LocalPlayer)
+        if hum and hrp then
+            hum.UseJumpPower = true
+            hum.JumpPower = JumpHeightValue
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+CreateToggleButton(TabMove, "🧍 6.3 เวลาล้ม ลุกขึ้นยืนทันที (Instant Stand)", function(e)
+    InstantGetUpEnabled = e
+    if InstantGetUpEnabled then
+        CleanConnection("InstantGetUp")
+        Connections["InstantGetUp"] = RunService.Stepped:Connect(function()
+            local hum = GetHum(LocalPlayer)
+            if hum then
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                local state = hum:GetState()
+                if state == Enum.HumanoidStateType.FallingDown or state == Enum.HumanoidStateType.Ragdoll or state == Enum.HumanoidStateType.Physics or hum.PlatformStand or hum.Sit then
+                    hum.PlatformStand = false
+                    hum.Sit = false
+                    hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                end
+            end
+        end)
+    else
+        CleanConnection("InstantGetUp")
+        local hum = GetHum(LocalPlayer)
+        if hum then
+            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+        end
+    end
+end)
+
+CreateInputWithCircleBtn(TabMove, "💨 4. ความเร็วบิน (1-1000)", "🚀", function(t)
+    local n = tonumber(t)
+    if n then FlySpeed = math.clamp(n, 1, 1000) end
+end)
+
+CreateToggleButton(TabMove, "🌐 4.1 Flight of Invincible (สคริปต์ภายนอก)", function(e)
+    ExtFlightEnabled = e
+    if ExtFlightEnabled then
+        local beforePlayerGuis = {}
+        for _, v in pairs(LocalPlayer:WaitForChild("PlayerGui"):GetChildren()) do beforePlayerGuis[v] = true end
+
+        pcall(function()
+            loadstring(game:HttpGet("https://rawscripts.net/raw/Universal-Script-flight-of-the-Invincible-59729"))()
+        end)
+
+        task.delay(0.5, function()
+            for _, v in pairs(LocalPlayer:WaitForChild("PlayerGui"):GetChildren()) do
+                if not beforePlayerGuis[v] and v.Name ~= "GhostOscarGUI" then table.insert(ExternalFlyGuis, v) end
+            end
+        end)
+    else
+        local hrp, hum = GetHRP(LocalPlayer), GetHum(LocalPlayer)
+        if hrp then
+            for _, v in pairs(hrp:GetChildren()) do
+                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") or v:IsA("BodyPosition") then v:Destroy() end
+            end
+        end
+        if hum then hum.PlatformStand = false hum:ChangeState(Enum.HumanoidStateType.GettingUp) end
+        for _, gui in pairs(ExternalFlyGuis) do if gui and gui.Parent then gui:Destroy() end end
+        ExternalFlyGuis = {}
+    end
+end)
+
+CreateToggleButton(TabMove, "🦅 4.2 บินอิสระ (หันตามกล้อง & บังคับ WASD สมูท)", function(e)
+    FlyingEnabled = e
+    local hrp, hum = GetHRP(LocalPlayer), GetHum(LocalPlayer)
+    
+    if FlyingEnabled and hrp then
+        if hum then hum.PlatformStand = true end
+
+        local bv = hrp:FindFirstChild("GhostFlyBV") or Instance.new("BodyVelocity")
+        bv.Name = "GhostFlyBV"
+        bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+        bv.Velocity = Vector3.zero
+        bv.Parent = hrp
+
+        local bg = hrp:FindFirstChild("GhostFlyBG") or Instance.new("BodyGyro")
+        bg.Name = "GhostFlyBG"
+        bg.MaxTorque = Vector3.new(1e9, 1e9, 1e9)
+        bg.P = 9e4
+        bg.Parent = hrp
+
+        local currentVel = Vector3.zero
+
+        CleanConnection("Fly")
+        Connections["Fly"] = RunService.RenderStepped:Connect(function(dt)
+            local currentHRP, currentHum = GetHRP(LocalPlayer), GetHum(LocalPlayer)
+            if not FlyingEnabled or not currentHRP or not currentHRP:FindFirstChild("GhostFlyBV") then
+                if bv then bv:Destroy() end
+                if bg then bg:Destroy() end
+                if currentHum then 
+                    currentHum.PlatformStand = false 
+                    currentHum:ChangeState(Enum.HumanoidStateType.GettingUp) 
+                end
+                CleanConnection("Fly")
+                return
+            end
+
+            currentHum.PlatformStand = true
+            bg.CFrame = Camera.CFrame
+
+            local camCF = Camera.CFrame
+            local forward = (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0)
+            local right = (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0)
+            local up = ((UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.E)) and 1 or 0) - ((UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) or UserInputService:IsKeyDown(Enum.KeyCode.Q)) and 1 or 0)
+
+            local targetVel = Vector3.zero
+            if forward ~= 0 or right ~= 0 or up ~= 0 then
+                local moveDir = (camCF.LookVector * forward) + (camCF.RightVector * right) + (Vector3.new(0, 1, 0) * up)
+                targetVel = moveDir.Unit * FlySpeed
+            end
+
+            currentVel = currentVel:Lerp(targetVel, math.clamp(dt * 15, 0, 1))
+            bv.Velocity = currentVel
+        end)
+    else
+        if hum then 
+            hum.PlatformStand = false 
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp) 
+        end
+        if hrp then
+            if hrp:FindFirstChild("GhostFlyBV") then hrp.GhostFlyBV:Destroy() end
+            if hrp:FindFirstChild("GhostFlyBG") then hrp.GhostFlyBG:Destroy() end
+        end
+        CleanConnection("Fly")
+    end
+end)
+
+CreateToggleButton(TabMove, "🦵 5. เดินไม่ก้าวเท้า (No Leg)", function(e)
+    NoLegAnimEnabled = e
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Animate") then
+        LocalPlayer.Character.Animate.Disabled = NoLegAnimEnabled
+    end
+end)
+
+CreateToggleButton(TabMove, "🦘 6. กระโดดได้เรื่อยๆ (Inf Jump)", function(e) InfiniteJumpEnabled = e end)
+UserInputService.JumpRequest:Connect(function()
+    if InfiniteJumpEnabled then
+        local hum = GetHum(LocalPlayer)
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+-- ==================== TAB 2: 👁️ VISUALS & CAM ====================
+local ESPFolder = workspace:FindFirstChild("GhostOscarESP") or Instance.new("Folder", workspace)
+ESPFolder.Name = "GhostOscarESP"
+
+local function ClearESPForPlayer(plr)
+    if ESPCache[plr] then
+        if ESPCache[plr].Highlight then ESPCache[plr].Highlight:Destroy() end
+        if ESPCache[plr].Billboard then ESPCache[plr].Billboard:Destroy() end
+        ESPCache[plr] = nil
+    end
+end
+
+CreateDropdown(TabCam, "👁️ เลือกเป้าหมายมองทะลุ 🔻", nil, "เลือก", Theme.AccentOn, function(p, btn)
+    ESPTarget = p
+    btn.Text = p and ("👁️ 8.1 เป้าหมาย: " .. p.DisplayName) or "👁️ เลือกเป้าหมายมองทะลุ 🔻"
+end)
+
+CreateToggleButton(TabCam, "👁️ 8.1 เปิดมองทะลุเฉพาะคนที่เลือก", function(e) 
+    ESPSpecificEnabled = e 
+    if not e and not ESPAllEnabled and not RoleESPEnabled then
+        for p in pairs(ESPCache) do ClearESPForPlayer(p) end
+    end
+end)
+
+CreateToggleButton(TabCam, "👁️ 8.2 เปิดมองทะลุทุกคนในห้อง (ESP All)", function(e) 
+    ESPAllEnabled = e 
+    if not e and not ESPSpecificEnabled and not RoleESPEnabled then
+        for p in pairs(ESPCache) do ClearESPForPlayer(p) end
+    end
+end)
+
+CreateToggleButton(TabCam, "🏷️ 8.3 แสดงชื่อบทบาท (Role ESP + ออร่าทะลุแมพ)", function(e)
+    RoleESPEnabled = e
+    if not e and not ESPAllEnabled and not ESPSpecificEnabled then
+        for p in pairs(ESPCache) do ClearESPForPlayer(p) end
+    end
+end)
+
+CreateInputWithCircleBtn(TabCam, "📏 8.0 ปรับขนาดตัวอักษร ESP (8-30)", "🔤", function(t)
+    local n = tonumber(t)
+    if n then ESPTextSize = math.clamp(n, 8, 30) end
+end)
+
+CreateInputWithCircleBtn(TabCam, "🔴 ปรับสีบทบาท [ไอชั่ว] (RGB/ชื่อสี)", "🎨", function(t)
+    MurderColor = ParseColorInput(t, MurderColor)
+end)
+
+CreateInputWithCircleBtn(TabCam, "🔵 ปรับสีบทบาท [ฮีโร่] (RGB/ชื่อสี)", "🎨", function(t)
+    HeroColor = ParseColorInput(t, HeroColor)
+end)
+
+CreateInputWithCircleBtn(TabCam, "🟢 ปรับสีบทบาท [คนดี] (RGB/ชื่อสี)", "🎨", function(t)
+    InnocentColor = ParseColorInput(t, InnocentColor)
+end)
+
+RunService.RenderStepped:Connect(function()
+    if not (ESPAllEnabled or ESPSpecificEnabled or RoleESPEnabled) then return end
+
+    local myHRP = GetHRP(LocalPlayer)
+    local activeTargets = {}
+
+    if ESPAllEnabled or RoleESPEnabled then
+        for _, p in pairs(Players:GetPlayers()) do if p ~= LocalPlayer then activeTargets[p] = true end end
+    elseif ESPSpecificEnabled and ESPTarget then
+        activeTargets[ESPTarget] = true
+    end
+
+    for p in pairs(ESPCache) do
+        if not activeTargets[p] or not p.Parent then ClearESPForPlayer(p) end
+    end
+
+    for p in pairs(activeTargets) do
+        if p.Character then
+            local char = p.Character
+            local head, hum, tHRP = char:FindFirstChild("Head"), GetHum(p), GetHRP(p)
+
+            if head and hum and tHRP then
+                if not ESPCache[p] then
+                    local hl = Instance.new("Highlight")
+                    hl.Name = "GhostRoleHighlight"
+                    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                    hl.FillColor = Color3.fromRGB(255, 255, 255)
+                    hl.FillTransparency = 0.75
+                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    hl.OutlineTransparency = 0.1
+                    hl.Adornee = char
+                    hl.Parent = char
+
+                    local bb = Instance.new("BillboardGui", ESPFolder)
+                    bb.Name = p.Name .. "_ESP"
+                    bb.AlwaysOnTop = true
+                    bb.MaxDistance = math.huge
+                    bb.Adornee = head
+
+                    local container = Instance.new("Frame", bb)
+                    container.Size = UDim2.new(1, 0, 1, 0)
+                    container.BackgroundTransparency = 1
+
+                    local listLayout = Instance.new("UIListLayout", container)
+                    listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+                    listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+                    listLayout.Padding = UDim.new(0, 2)
+
+                    local nameLbl = Instance.new("TextLabel", container)
+                    nameLbl.LayoutOrder = 1
+                    nameLbl.BackgroundTransparency = 1
+                    nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    nameLbl.TextStrokeTransparency = 0
+                    nameLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                    nameLbl.Font = Enum.Font.SourceSansBold
+
+                    local midFrame = Instance.new("Frame", container)
+                    midFrame.LayoutOrder = 2
+                    midFrame.BackgroundTransparency = 1
+
+                    local infoLbl = Instance.new("TextLabel", midFrame)
+                    infoLbl.BackgroundTransparency = 1
+                    infoLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    infoLbl.TextStrokeTransparency = 0
+                    infoLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                    infoLbl.Font = Enum.Font.SourceSansBold
+
+                    local barBg = Instance.new("Frame", midFrame)
+                    barBg.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+                    barBg.BorderSizePixel = 0
+                    Instance.new("UICorner", barBg).CornerRadius = UDim.new(0, 3)
+
+                    local barFill = Instance.new("Frame", barBg)
+                    barFill.Size = UDim2.new(1, 0, 1, 0)
+                    barFill.BackgroundColor3 = Color3.fromRGB(0, 255, 100)
+                    barFill.BorderSizePixel = 0
+                    Instance.new("UICorner", barFill).CornerRadius = UDim.new(0, 3)
+
+                    local roleLbl = Instance.new("TextLabel", container)
+                    roleLbl.LayoutOrder = 3
+                    roleLbl.BackgroundTransparency = 1
+                    roleLbl.TextStrokeTransparency = 0
+                    roleLbl.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                    roleLbl.Font = Enum.Font.SourceSansBold
+
+                    ESPCache[p] = { 
+                        Highlight = hl, 
+                        Billboard = bb, 
+                        NameLabel = nameLbl, 
+                        InfoLabel = infoLbl, 
+                        RoleLabel = roleLbl, 
+                        HPFill = barFill,
+                        BarBg = barBg,
+                        MidFrame = midFrame
+                    }
+                end
+
+                local cache = ESPCache[p]
+                local dist = myHRP and math.floor((myHRP.Position - tHRP.Position).Magnitude) or 0
+                local curHP = math.clamp(hum.Health, 0, hum.MaxHealth)
+                local maxHP = hum.MaxHealth > 0 and hum.MaxHealth or 100
+                local ratio = curHP / maxHP
+
+                cache.NameLabel.TextSize = ESPTextSize
+                cache.InfoLabel.TextSize = math.max(ESPTextSize - 2, 8)
+                cache.RoleLabel.TextSize = ESPTextSize
+
+                cache.NameLabel.Size = UDim2.new(1, 0, 0, ESPTextSize + 4)
+                cache.InfoLabel.Size = UDim2.new(1, 0, 0, ESPTextSize + 2)
+                cache.MidFrame.Size = UDim2.new(1, 0, 0, (ESPTextSize * 2) + 2)
+                cache.RoleLabel.Size = UDim2.new(1, 0, 0, ESPTextSize + 4)
+
+                cache.BarBg.Size = UDim2.new(0.8, 0, 0, math.clamp(ESPTextSize * 0.35, 4, 10))
+                cache.BarBg.Position = UDim2.new(0.1, 0, 0, ESPTextSize + 2)
+
+                local totalWidth = math.max(220, ESPTextSize * 16)
+                local totalHeight = (ESPTextSize * 4) + 20
+                cache.Billboard.Size = UDim2.new(0, totalWidth, 0, totalHeight)
+                cache.Billboard.StudsOffset = Vector3.new(0, 3.2 + (ESPTextSize * 0.05), 0)
+
+                cache.NameLabel.Text = string.format("%s (@%s)", p.DisplayName, p.Name)
+                cache.InfoLabel.Text = string.format("📏 %d m | 💖 %d/%d", dist, math.floor(curHP), math.floor(maxHP))
+                cache.HPFill.Size = UDim2.new(ratio, 0, 1, 0)
+                cache.HPFill.BackgroundColor3 = Color3.fromHSV(ratio * 0.3, 0.9, 0.9)
+
+                local roleName, roleColor = DetectPlayerRole(p)
+
+                if RoleESPEnabled then
+                    cache.RoleLabel.Text = "🎭 บทบาท: " .. roleName
+                    cache.RoleLabel.TextColor3 = roleColor
+                    cache.RoleLabel.Visible = true
+
+                    cache.Highlight.FillColor = roleColor
+                    cache.Highlight.FillTransparency = 0.75
+                    cache.Highlight.OutlineColor = roleColor
+                    cache.Highlight.OutlineTransparency = 0.1
+                else
+                    cache.RoleLabel.Visible = false
+                    cache.Highlight.FillColor = Color3.fromRGB(255, 60, 60)
+                    cache.Highlight.FillTransparency = 0.6
+                    cache.Highlight.OutlineColor = Color3.fromRGB(255, 60, 60)
+                    cache.Highlight.OutlineTransparency = 0.1
+                end
+            end
+        end
+    end
+end)
+
+local fixCamCard = CreateCard(TabCam, 34)
+local fixCamLabel = Instance.new("TextLabel", fixCamCard)
+fixCamLabel.Size, fixCamLabel.Position, fixCamLabel.BackgroundTransparency = UDim2.new(1, -45, 1, 0), UDim2.new(0, 10, 0, 0), 1
+fixCamLabel.Text = "🎥 14. แก้ไขมุมกล้อง (Fix Cam)"
+fixCamLabel.TextColor3, fixCamLabel.Font, fixCamLabel.TextSize = Theme.TextPrimary, Enum.Font.GothamMedium, 10
+fixCamLabel.TextXAlignment = Enum.TextXAlignment.Left
+
+local fixCamBtn = CreateCircleBtn(fixCamCard, "🎥", Theme.AccentOn, UDim2.new(0, 28, 0, 22), UDim2.new(1, -34, 0.5, -11))
+fixCamBtn.MouseButton1Click:Connect(function()
+    local hum = GetHum(LocalPlayer)
+    if Camera and hum then
+        Camera.CameraType = Enum.CameraType.Custom
+        Camera.CameraSubject = hum
+        Camera.FieldOfView = 70
+    end
+end)
+
+CreateToggleButton(TabCam, "🔍 15. ปลดล็อกระยะซูมกล้อง (Unlimited Zoom)", function(e)
+    MaxZoomEnabled = e
+    LocalPlayer.CameraMaxZoomDistance = MaxZoomEnabled and 100000 or 128
+    LocalPlayer.CameraMinZoomDistance = 0.5
+end)
+
+CreateToggleButton(TabCam, "💡 16. มองที่มืดได้ (Fullbright)", function(e)
+    FullbrightEnabled = e
+    if FullbrightEnabled then
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness = 2
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+    else
+        Lighting.Ambient = OldLighting.Ambient
+        Lighting.OutdoorAmbient = OldLighting.OutdoorAmbient
+        Lighting.Brightness = OldLighting.Brightness
+        Lighting.GlobalShadows = OldLighting.GlobalShadows
+        Lighting.FogEnd = OldLighting.FogEnd
+    end
+end)
+
+CreateToggleButton(TabCam, "🔒 17. บังคับใช้งาน Shift Lock", function(e)
+    ShiftLockEnabled = e
+    local controller = GetMouseLockController()
+    
+    if ShiftLockEnabled then
+        LocalPlayer.DevEnableMouseLock = true
+        if controller and not controller:GetIsMouseLocked() then controller:OnMouseLockToggled() end
+    else
+        if controller and controller:GetIsMouseLocked() then controller:OnMouseLockToggled() end
+        LocalPlayer.DevEnableMouseLock = OriginalDevMouseLock
+    end
+end)
+
+-- ==================== TAB 3: 🎯 TARGET & TROLL ====================
+local function OneClickKillRole()
+    local myRole = DetectPlayerRole(LocalPlayer)
+    local myChar = LocalPlayer.Character
+    local myHRP = GetHRP(LocalPlayer)
+    if not myChar or not myHRP then return end
+
+    if myRole == "ไอชั่ว" then
+        local knife = nil
+        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                local name = tool.Name:lower()
+                if name:find("knife") or name:find("blade") or name:find("sword") or name:find("dagger") or name:find("มีด") or name:find("ขวาน") then
+                    knife = tool
+                    break
+                end
+            end
+        end
+        if not knife and myChar:FindFirstChildOfClass("Tool") then
+            knife = myChar:FindFirstChildOfClass("Tool")
+        end
+
+        if knife then
+            knife.Parent = myChar
+            local handle = knife:FindFirstChild("Handle") or knife:FindFirstChild("Blade") or knife:FindFirstChildOfClass("BasePart")
+            local origCF = myHRP.CFrame
+
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    local tHRP = GetHRP(p)
+                    local tHum = GetHum(p)
+                    if tHRP and tHum and tHum.Health > 0 then
+                        if typeof(firetouchinterest) == "function" and handle then
+                            pcall(function()
+                                firetouchinterest(tHRP, handle, 0)
+                                firetouchinterest(tHRP, handle, 1)
+                            end)
+                        else
+                            myHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 1)
+                            task.wait(0.02)
+                            if knife:FindFirstChild("Activate") or knife:IsA("Tool") then knife:Activate() end
+                        end
+                    end
+                end
+            end
+            task.wait(0.05)
+            myHRP.CFrame = origCF
+        end
+
+    elseif myRole == "ฮีโร่" then
+        local gun = nil
+        for _, tool in pairs(LocalPlayer.Backpack:GetChildren()) do
+            if tool:IsA("Tool") then
+                local name = tool.Name:lower()
+                if name:find("gun") or name:find("revolver") or name:find("pistol") or name:find("sheriff") or name:find("ปืน") or name:find("bow") then
+                    gun = tool
+                    break
+                end
+            end
+        end
+        if not gun then
+            for _, tool in pairs(myChar:GetChildren()) do
+                if tool:IsA("Tool") then
+                    local name = tool.Name:lower()
+                    if name:find("gun") or name:find("revolver") or name:find("pistol") or name:find("sheriff") or name:find("ปืน") or name:find("bow") then
+                        gun = tool
+                        break
+                    end
+                end
+            end
+        end
+
+        if gun then
+            gun.Parent = myChar
+            local murderPlr = nil
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer then
+                    local roleName = DetectPlayerRole(p)
+                    if roleName == "ไอชั่ว" then
+                        murderPlr = p
+                        break
+                    end
+                end
+            end
+
+            if murderPlr and murderPlr.Character then
+                local tHRP = GetHRP(murderPlr)
+                local tHead = murderPlr.Character:FindFirstChild("Head")
+                local handle = gun:FindFirstChild("Handle") or gun:FindFirstChildOfClass("BasePart")
+                local origCF = myHRP.CFrame
+
+                if tHRP then
+                    local shootRemote = gun:FindFirstChild("Shoot") or gun:FindFirstChild("KnifeServer") or game:GetService("ReplicatedStorage"):FindFirstChild("ShootGun", true)
+                    
+                    if typeof(firetouchinterest) == "function" and handle then
+                        pcall(function()
+                            firetouchinterest(tHRP, handle, 0)
+                            firetouchinterest(tHRP, handle, 1)
+                        end)
+                    end
+
+                    myHRP.CFrame = CFrame.new(tHRP.Position - (tHRP.CFrame.LookVector * 3), tHRP.Position)
+                    task.wait(0.04)
+                    if gun:FindFirstChild("Activate") or gun:IsA("Tool") then
+                        gun:Activate()
+                    end
+                    
+                    if shootRemote and shootRemote:IsA("RemoteEvent") then
+                        pcall(function()
+                            shootRemote:FireServer(tHRP.Position, (tHead or tHRP).Position)
+                        end)
+                    end
+
+                    task.wait(0.05)
+                    myHRP.CFrame = origCF
+                end
+            end
+        end
+    end
+end
+
+CreateActionButton(TabTroll, "⚔️ 23. กดครั้งเดียวฆ่าตามบทบาท (One-Click Role Kill)", "สังหาร!", Theme.ButtonRed, function()
+    OneClickKillRole()
+end)
+
+CreateActionButton(TabTroll, "🔫 24. วาร์ปไปเก็บปืนแล้วกลับมาที่เดิม (TP Gun & Back)", "วาร์ป!", Theme.AccentOn, function()
+    TeleportToDroppedGun()
+end)
+
+CreateInputWithCircleBtn(TabTroll, "⏱️ 3. เวลาโผล่หน้า (วิ)", "⏱️", function(t)
+    local n = tonumber(t)
+    if n then JumpScareTime = math.clamp(n, 0.5, 100) end
+end)
+
+CreateDropdown(TabTroll, "😱 3. เลือกเป้าหมายโผล่หน้า 🔻", "👻", "เลือก", Theme.ButtonRed, function(p, btn)
+    JumpScareTarget = p
+    btn.Text = p and ("😱 3. เป้าหมาย: " .. p.DisplayName) or "😱 3. เลือกเป้าหมายโผล่หน้า 🔻"
+end, function()
+    local target = GetTarget(JumpScareTarget)
+    local myHRP, targetHRP = GetHRP(LocalPlayer), GetHRP(target)
+    if myHRP and targetHRP then
+        local old = myHRP.CFrame
+        myHRP.CFrame = targetHRP.CFrame * CFrame.new(0, 0, -2.5) * CFrame.Angles(0, math.pi, 0)
+        task.delay(JumpScareTime, function()
+            if myHRP and myHRP.Parent then myHRP.CFrame = old end
+        end)
+    end
+end)
+
+CreateInputWithCircleBtn(TabTroll, "🏎️ 7. ความเร็วเดินตาม (1-1000)", "⚡", function(t)
+    local n = tonumber(t)
+    if n then FollowSpeed = math.clamp(n, 1, 1000) end
+end)
+
+CreateDropdown(TabTroll, "🎯 7. เลือกเป้าหมาย (มอง/ตาม) 🔻", nil, "เลือก", Theme.AccentOn, function(p, btn)
+    LockFollowTarget = p
+    btn.Text = p and ("🎯 7. เป้าหมาย: " .. p.DisplayName) or "🎯 7. เลือกเป้าหมาย (มอง/ตาม) 🔻"
+end)
+
+CreateToggleButton(TabTroll, "👀 7.1 มองล็อคเป้าหมาย (Lock Cam)", function(e)
+    SpectateEnabled = e
+    if SpectateEnabled then
+        local target = GetTarget(LockFollowTarget)
+        local hum = GetHum(target)
+        if hum then Camera.CameraSubject = hum end
+    else
+        local myHum = GetHum(LocalPlayer)
+        if myHum then Camera.CameraSubject = myHum end
+    end
+end)
+
+CreateToggleButton(TabTroll, "👣 7.2 เดินตามเป้าหมายตลอดเวลา", function(e)
+    AutoFollowEnabled = e
+    if AutoFollowEnabled then
+        CleanConnection("Follow")
+        Connections["Follow"] = RunService.Heartbeat:Connect(function()
+            local target = GetTarget(LockFollowTarget)
+            local tHRP, myHum = GetHRP(target), GetHum(LocalPlayer)
+            if tHRP and myHum then
+                myHum.WalkSpeed = FollowSpeed
+                myHum:MoveTo(tHRP.Position)
+            end
+        end)
+    else
+        CleanConnection("Follow")
+    end
+end)
+
+CreateDropdown(TabTroll, "👀 เลือกเป้าหมายหันมอง 🔻", nil, "เลือก", Theme.AccentOn, function(p, btn)
+    LookAtTarget = p
+    btn.Text = p and ("👀 เป้าหมายหันมอง: " .. p.DisplayName) or "👀 เลือกเป้าหมายหันมอง 🔻"
+end)
+
+CreateToggleButton(TabTroll, "👀 7.3 ตัวละครหันมองเป้าหมายตลอดเวลา", function(e)
+    LookAtEnabled = e
+    if LookAtEnabled then
+        CleanConnection("LookAt")
+        Connections["LookAt"] = RunService.RenderStepped:Connect(function()
+            local target = GetTarget(LookAtTarget)
+            local myHRP, tHRP = GetHRP(LocalPlayer), GetHRP(target)
+            if myHRP and tHRP then
+                local lookPos = Vector3.new(tHRP.Position.X, myHRP.Position.Y, tHRP.Position.Z)
+                myHRP.CFrame = CFrame.new(myHRP.Position, lookPos)
+            end
+        end)
+    else
+        CleanConnection("LookAt")
+    end
+end)
+
+CreateInputWithCircleBtn(TabTroll, "⏳ 9. เวลากระแทก (วิ)", "⏱️", function(t)
+    local n = tonumber(t)
+    if n then FlingTime = math.clamp(n, 0.1, 1000) end
+end)
+
+CreateDropdown(TabTroll, "💥 9. เลือกเป้าหมายกระแทก 🔻", "💥", "เลือก", Theme.ButtonRed, function(p, btn)
+    FlingTarget = p
+    btn.Text = p and ("💥 9. เป้าหมาย: " .. p.DisplayName) or "💥 9. เลือกเป้าหมายกระแทก 🔻"
+end, function()
+    local target = GetTarget(FlingTarget)
+    local myHRP, tHRP = GetHRP(LocalPlayer), GetHRP(target)
+
+    if myHRP and tHRP then
+        local orig = myHRP.CFrame
+        local bav = Instance.new("BodyAngularVelocity")
+        bav.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+        bav.AngularVelocity = Vector3.new(0, 99999, 0)
+        bav.Parent = myHRP
+
+        local st = tick()
+        CleanConnection("Fling")
+        Connections["Fling"] = RunService.Heartbeat:Connect(function()
+            local curHRP = GetHRP(LocalPlayer)
+            if tick() - st > FlingTime or not curHRP then
+                if bav then bav:Destroy() end
+                CleanConnection("Fling")
+                if curHRP then
+                    curHRP.Velocity = Vector3.zero
+                    curHRP.RotVelocity = Vector3.zero
+                    curHRP.CFrame = orig
+                end
+            elseif tHRP then
+                curHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, math.sin(tick() * 30) * 0.1)
+                curHRP.Velocity = Vector3.new(10000, 10000, 10000)
+            end
+        end)
+    end
+end)
+
+CreateDropdown(TabTroll, "🌀 10. เลือกวาร์ปไปหาผู้เล่น 🔻", nil, "🌀", Theme.AccentOn, function(p)
+    local myHRP, targetHRP = GetHRP(LocalPlayer), GetHRP(p)
+    if myHRP and targetHRP then myHRP.CFrame = targetHRP.CFrame * CFrame.new(0, 0, 3) end
+end)
+
+CreateInputWithCircleBtn(TabTroll, "⏱️ 12. เวลาแอบหลัง (วิ)", "⏱️", function(t)
+    local n = tonumber(t)
+    if n then BehindStayTime = math.clamp(n, 0.1, 1e8) end
+end)
+
+CreateDropdown(TabTroll, "👤 12. เลือกเป้าหมายโผล่หลัง 🔻", "👤", "เลือก", Theme.AccentOn, function(p, btn)
+    BehindTarget = p
+    btn.Text = p and ("👤 12. เป้าหมาย: " .. p.DisplayName) or "👤 12. เลือกเป้าหมายโผล่หลัง 🔻"
+end, function()
+    local target = GetTarget(BehindTarget)
+    local myHRP = GetHRP(LocalPlayer)
+    if IsBehindActive or not myHRP or not target then return end
+
+    IsBehindActive = true
+    local orig, st = myHRP.CFrame, tick()
+    
+    CleanConnection("Behind")
+    Connections["Behind"] = RunService.Heartbeat:Connect(function()
+        local curHRP, tHRP = GetHRP(LocalPlayer), GetHum(target) and GetHRP(target)
+        if tick() - st > BehindStayTime or not curHRP then
+            CleanConnection("Behind")
+            if curHRP then curHRP.CFrame = orig end
+            IsBehindActive = false
+        elseif tHRP then 
+            curHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, 2.5) 
+        end
+    end)
+end)
+
+CreateInputWithCircleBtn(TabTroll, "⚙️ 20. ความไว Bang Rip (1-1000)", "⚡", function(t)
+    local n = tonumber(t)
+    if n then BangRipSpeed = math.clamp(n, 1, 1000) end
+end)
+
+CreateDropdown(TabTroll, "🔞 20. เลือกเป้าหมาย Bang Rip 🔻", nil, "เลือก", Theme.AccentOn, function(p, btn)
+    BangRipTarget = p
+    btn.Text = p and ("🔞 20. เป้าหมาย Bang: " .. p.DisplayName) or "🔞 20. เลือกเป้าหมาย Bang Rip 🔻"
+end)
+
+CreateToggleButton(TabTroll, "🔄 20.1 เปิด/ปิด Bang Rip (Bang Loop)", function(e)
+    BangRipEnabled = e
+    if BangRipEnabled then
+        CleanConnection("BangRip")
+        Connections["BangRip"] = RunService.Heartbeat:Connect(function()
+            local target = GetTarget(BangRipTarget)
+            local curHRP, tHRP = GetHRP(LocalPlayer), GetHRP(target)
+
+            if curHRP and tHRP then
+                local offsetDist = 1.2 + (math.sin(tick() * (BangRipSpeed / 3)) * 1.0)
+                curHRP.CFrame = tHRP.CFrame * CFrame.new(0, 0, offsetDist)
+            end
+        end)
+    else
+        CleanConnection("BangRip")
+    end
+end)
+
+CreateInputWithCircleBtn(TabTroll, "🛸 ความเร็วบินรอบ (0.1 - 1000)", "⚡", function(t)
+    local n = tonumber(t)
+    if n then OrbitSpeed = math.clamp(n, 0.1, 1000) end
+end)
+
+CreateDropdown(TabTroll, "🛸 เลือกเป้าหมายบินรอบ 🔻", nil, "เลือก", Theme.AccentOn, function(p, btn)
+    OrbitTarget = p
+    btn.Text = p and ("🛸 เป้าหมายบินรอบ: " .. p.DisplayName) or "🛸 เลือกเป้าหมายบินรอบ 🔻"
+end)
+
+CreateToggleButton(TabTroll, "🛸 21. เปิด/ปิด บินรอบผู้เล่น (Smooth Orbit)", function(e)
+    OrbitEnabled = e
+    if OrbitEnabled then
+        CleanConnection("Orbit")
+        Connections["Orbit"] = RunService.Heartbeat:Connect(function(dt)
+            local target = GetTarget(OrbitTarget)
+            local curHRP, tHRP = GetHRP(LocalPlayer), GetHRP(target)
+
+            if curHRP and tHRP then
+                OrbitAngle = (OrbitAngle + (dt * OrbitSpeed)) % (math.pi * 2)
+                local targetPos = tHRP.Position + Vector3.new(math.cos(OrbitAngle) * OrbitDistance, 0, math.sin(OrbitAngle) * OrbitDistance)
+                
+                curHRP.Velocity = Vector3.zero
+                curHRP.CFrame = CFrame.new(targetPos, tHRP.Position)
+            end
+        end)
+    else
+        CleanConnection("Orbit")
+    end
+end)
+
+CreateInputWithCircleBtn(TabTroll, "🎯 22. ตั้งขนาด Hitbox (1-100)", "📏", function(t)
+    local n = tonumber(t)
+    if n then HitboxSize = math.clamp(n, 1, 100) end
+end)
+
+local shapeCard = CreateCard(TabTroll, 34)
+local shapeLbl = Instance.new("TextLabel", shapeCard)
+shapeLbl.Size, shapeLbl.Position, shapeLbl.BackgroundTransparency = UDim2.new(1, -85, 1, 0), UDim2.new(0, 10, 0, 0), 1
+shapeLbl.Text = "💠 22.1 รูปทรง Hitbox: สี่เหลี่ยม (Block)"
+shapeLbl.TextColor3, shapeLbl.Font, shapeLbl.TextSize = Theme.TextPrimary, Enum.Font.GothamMedium, 10
+shapeLbl.TextXAlignment = Enum.TextXAlignment.Left
+
+local shapeBtn = CreateCircleBtn(shapeCard, "สลับทรง", Theme.AccentOn, UDim2.new(0, 60, 0, 22), UDim2.new(1, -66, 0.5, -11))
+shapeBtn.MouseButton1Click:Connect(function()
+    if HitboxShape == "Block" then
+        HitboxShape = "Ball"
+        shapeLbl.Text = "💠 22.1 รูปทรง Hitbox: วงกลม (Sphere)"
+    else
+        HitboxShape = "Block"
+        shapeLbl.Text = "💠 22.1 รูปทรง Hitbox: สี่เหลี่ยม (Block)"
+    end
+end)
+
+local function ResetAllHitboxes()
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hrp = GetHRP(p)
+            if hrp then
+                hrp.Size = Vector3.new(2, 2, 1)
+                hrp.Transparency = 1
+                hrp.Shape = Enum.PartType.Block
+            end
+        end
+    end
+end
+
+CreateToggleButton(TabTroll, "🎯 22.2 เปิด/ปิด Hitbox Expander (ขึ้นทุกคนในห้อง)", function(e)
+    HitboxEnabled = e
+    if not HitboxEnabled then
+        ResetAllHitboxes()
+    end
+end)
+
+RunService.RenderStepped:Connect(function()
+    if HitboxEnabled then
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local hrp = GetHRP(p)
+                if hrp then
+                    hrp.Size = Vector3.new(HitboxSize, HitboxSize, HitboxSize)
+                    hrp.Transparency = 0.45
+                    hrp.BrickColor = BrickColor.new("Dark red")
+                    hrp.Material = Enum.Material.ForceField
+                    hrp.CanCollide = false
+                    if HitboxShape == "Ball" then
+                        hrp.Shape = Enum.PartType.Ball
+                    else
+                        hrp.Shape = Enum.PartType.Block
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- ==================== TAB 4: 🛡️ SAFETY & PLAYER ====================
+local function ApplyAntiLag(enable)
+    if enable then
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        for _, v in pairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("BlurEffect") or v:IsA("SunRaysEffect") or v:IsA("ColorCorrectionEffect") or v:IsA("BloomEffect") or v:IsA("DepthOfFieldEffect") then
+                v.Enabled = false
+            end
+        end
+
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if obj:IsA("ParticleEmitter") or obj:IsA("Smoke") or obj:IsA("Fire") or obj:IsA("Sparkles") or obj:IsA("Trail") then
+                if obj.Enabled then
+                    table.insert(DisabledParticles, obj)
+                    obj.Enabled = false
+                end
+            elseif obj:IsA("BasePart") and not obj:IsA("MeshPart") then
+                obj.Material = Enum.Material.SmoothPlastic
+            end
+        end
+    else
+        Lighting.GlobalShadows = OldLighting.GlobalShadows
+        Lighting.FogEnd = OldLighting.FogEnd
+        for _, v in pairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("BlurEffect") or v:IsA("SunRaysEffect") or v:IsA("ColorCorrectionEffect") or v:IsA("BloomEffect") or v:IsA("DepthOfFieldEffect") then
+                v.Enabled = true
+            end
+        end
+
+        for _, obj in pairs(DisabledParticles) do
+            if obj and obj.Parent then
+                obj.Enabled = true
+            end
+        end
+        DisabledParticles = {}
+    end
+end
+
+CreateToggleButton(TabSafe, "🚀 11. กันแล็ค / เพิ่ม FPS (Anti-Lag)", function(e)
+    AntiLagEnabled = e
+    ApplyAntiLag(AntiLagEnabled)
+end)
+
+CreateToggleButton(TabSafe, "🕳️ 13. ป้องกันตกแมพ (Anti-Void Return)", function(e)
+    AntiVoidEnabled = e
+    if AntiVoidEnabled then
+        CleanConnection("AntiVoid")
+        Connections["AntiVoid"] = RunService.Heartbeat:Connect(function()
+            local hrp, hum = GetHRP(LocalPlayer), GetHum(LocalPlayer)
+            if hrp and hum then
+                if hum.FloorMaterial ~= Enum.Material.Air and hrp.Position.Y > (workspace.FallenPartsDestroyHeight + 20) then
+                    LastSafeCF = hrp.CFrame
+                end
+
+                if hrp.Position.Y <= (workspace.FallenPartsDestroyHeight + 30) then
+                    hrp.CFrame = LastSafeCF and (LastSafeCF + Vector3.new(0, 3, 0)) or CFrame.new(0, 50, 0)
+                    hrp.Velocity = Vector3.zero
+                end
+            end
+        end)
+    else
+        CleanConnection("AntiVoid")
+    end
+end)
+
+CreateActionButton(TabSafe, "💀 18. รีเซ็ตตัวละคร (Reset)", "กดรีเซ็ต", Theme.ButtonRed, function()
+    local char, hum = LocalPlayer.Character, GetHum(LocalPlayer)
+    if char and hum then
+        hum.MaxHealth = 100
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+        hum.Health = 0
+        char:BreakJoints()
+    end
+end)
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    task.wait(0.5)
+    if NoLegAnimEnabled then
+        local anim = char:FindFirstChild("Animate")
+        if anim then anim.Disabled = true end
+    end
+    if AntiLagEnabled then ApplyAntiLag(true) end
+end)
+
+RunService.Stepped:Connect(function()
+    local hum = GetHum(LocalPlayer)
+    if hum and WalkSpeedEnabled and not AutoFollowEnabled then
+        if hum.WalkSpeed ~= WalkSpeedValue then hum.WalkSpeed = WalkSpeedValue end
+    end
+end)
